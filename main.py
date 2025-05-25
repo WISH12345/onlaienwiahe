@@ -6,7 +6,6 @@ import platform
 import requests
 import websockets
 from colorama import init, Fore
-from keep_alive import keep_alive
 
 init(autoreset=True)
 
