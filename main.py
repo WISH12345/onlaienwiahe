@@ -6,6 +6,7 @@ import platform
 import requests
 import websockets
 from colorama import init, Fore
+from keep_alive import keep_alive
 
 init(autoreset=True)
 
@@ -84,6 +85,7 @@ async def run_onliner():
     print(f"{Fore.WHITE}[{Fore.LIGHTGREEN_EX}+{Fore.WHITE}] Logged in as {Fore.LIGHTBLUE_EX}{username} {Fore.WHITE}({userid})!")
     while True:
         await onliner(usertoken, status)
-        await asyncio.sleep(50)
+        await asyncio.sleep(30)
 
+keep_alive()
 asyncio.run(run_onliner())
