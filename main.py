@@ -6,12 +6,12 @@ import platform
 import requests
 import websockets
 from colorama import init, Fore
-from keep_alive import keep_alive
+from keep_alive import keep_alive  # Make sure you also have keep_alive.py
 
 init(autoreset=True)
 
-status = "dnd"
-custom_status = ".gg/rollbet"
+status = "dnd"  # Options: "online", "idle", or "dnd"
+custom_status = ".gg/rollbet"  # Text to show in custom status
 
 def get_tokens_from_env():
     tokens = []
@@ -20,7 +20,7 @@ def get_tokens_from_env():
         token = os.getenv(f"TOKEN{i}")
         if not token:
             break
-        tokens.append(token)
+        tokens.append(token.strip())  # Strips any \n or spaces
         i += 1
     return tokens
 
@@ -85,6 +85,11 @@ async def onliner(token, userinfo):
         await onliner(token, userinfo)
 
 async def run_all():
+    if platform.system() == "Windows":
+        os.system("cls")
+    else:
+        os.system("clear")
+
     tasks = []
     for token in tokens:
         userinfo = validate_token(token)
@@ -94,5 +99,8 @@ async def run_all():
         tasks.append(asyncio.create_task(onliner(token, userinfo)))
     await asyncio.gather(*tasks)
 
+# Start Flask keep-alive server (for Railway/Replit)
 keep_alive()
+
+# Run the main async task
 asyncio.run(run_all())
