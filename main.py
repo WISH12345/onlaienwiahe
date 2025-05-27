@@ -98,7 +98,7 @@ async def presence_cycle(token, session):
                 await send_webhook(session, f"[✅ ONLINE] {username} is now online.")
                 print(f"{Fore.GREEN}[+] Online: {username}")
 
-                uptime = random.randint(7200, 14400)  # 2 to 4 hours
+                uptime = random.randint(28800, 39600)  # 2 to 4 hours
                 start_time = datetime.now(timezone.utc)
                 await asyncio.sleep(uptime)
 
