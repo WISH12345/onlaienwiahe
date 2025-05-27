@@ -2,109 +2,122 @@ import os
 import sys
 import json
 import asyncio
-import random
 import platform
+import random
+import aiohttp
 import requests
 import websockets
 from colorama import init, Fore
-from keep_alive import keep_alive
+from dotenv import load_dotenv
 
 init(autoreset=True)
+load_dotenv()
 
-status = "dnd"
-custom_status = ".gg/rollbet"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+TOKENS = [t.strip() for t in os.getenv("TOKENS", "").split("\n") if t.strip()]
+CUSTOM_STATUS = ".gg/rollbet"
+STATUS = "dnd"
 
-def get_tokens_from_env():
-    tokens = []
-    i = 1
-    while True:
-        token = os.getenv(f"TOKEN{i}")
-        if not token:
-            break
-        tokens.append(token.strip())
-        i += 1
-    return tokens
-
-tokens = get_tokens_from_env()
-
-if not tokens:
-    print(f"{Fore.RED}No tokens found in environment variables! Use TOKEN1, TOKEN2, etc.")
+if not TOKENS:
+    print(f"{Fore.WHITE}[{Fore.RED}-{Fore.WHITE}] Please add tokens inside your .env file as 'TOKENS'.")
     sys.exit()
 
-def validate_token(token):
-    headers = {"Authorization": token, "Content-Type": "application/json"}
-    r = requests.get("https://canary.discord.com/api/v9/users/@me", headers=headers)
-    if r.status_code != 200:
-        return None
-    return r.json()
+async def send_webhook_log(message):
+    if not WEBHOOK_URL:
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                WEBHOOK_URL,
+                json={"content": message},
+                headers={"Content-Type": "application/json"}
+            )
+    except Exception as e:
+        print(f"[!] Failed to send webhook log: {e}")
 
-async def simulate_presence(token, userinfo):
+async def heartbeat(ws, interval, username):
+    try:
+        while True:
+            await asyncio.sleep(interval / 1000)
+            await ws.send(json.dumps({"op": 1, "d": None}))
+    except Exception:
+        await send_webhook_log(f"[⚠️ DISCONNECTED] {username} lost connection. Attempting to reconnect...")
+
+async def simulate_presence(token):
+    headers = {"Authorization": token, "Content-Type": "application/json"}
+    validate = requests.get("https://canary.discord.com/api/v9/users/@me", headers=headers)
+
+    if validate.status_code != 200:
+        print(f"{Fore.WHITE}[{Fore.RED}-{Fore.WHITE}] Invalid token detected. Skipping...")
+        return
+
+    userinfo = validate.json()
+    username = userinfo.get("username")
+    discriminator = userinfo.get("discriminator")
+    userid = userinfo.get("id")
+
+    await send_webhook_log(f"[✅ ONLINE] {username}#{discriminator} ({userid}) is now online.")
+
     while True:
         try:
             async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
                 start = json.loads(await ws.recv())
-                heartbeat_interval = start["d"]["heartbeat_interval"] / 1000
+                heartbeat_interval = start['d']['heartbeat_interval']
 
-                async def heartbeat():
-                    while True:
-                        await ws.send(json.dumps({"op": 1, "d": None}))
-                        await asyncio.sleep(heartbeat_interval)
+                asyncio.create_task(heartbeat(ws, heartbeat_interval, username))
 
-                asyncio.create_task(heartbeat())
-
-                payload = {
+                auth_payload = {
                     "op": 2,
                     "d": {
                         "token": token,
                         "properties": {
-                            "$os": "Windows",
-                            "$browser": "Discord Client",
-                            "$device": "Discord Client"
+                            "$os": platform.system(),
+                            "$browser": "Chrome",
+                            "$device": "Windows"
                         },
-                        "presence": {
-                            "status": status,
-                            "afk": False,
-                            "activities": [
-                                {
-                                    "type": 4,
-                                    "state": custom_status,
-                                    "name": "Custom Status"
-                                }
-                            ]
-                        }
+                        "presence": {"status": STATUS, "afk": False},
                     }
                 }
 
-                await ws.send(json.dumps(payload))
-                print(f"{Fore.GREEN}[+]{Fore.WHITE} Online: {userinfo['username']}#{userinfo['discriminator']}")
+                await ws.send(json.dumps(auth_payload))
 
-                # Stay online for 1 to 3 hours
-                online_time = random.randint(3600, 10800)
-                await asyncio.sleep(online_time)
+                cstatus = {
+                    "op": 3,
+                    "d": {
+                        "since": 0,
+                        "activities": [
+                            {
+                                "type": 4,
+                                "state": CUSTOM_STATUS,
+                                "name": "Custom Status",
+                                "id": "custom"
+                            }
+                        ],
+                        "status": STATUS,
+                        "afk": False,
+                    }
+                }
+                await ws.send(json.dumps(cstatus))
 
-                print(f"{Fore.YELLOW}[~]{Fore.WHITE} {userinfo['username']} going offline for rest.")
+                # Keep session alive
+                await asyncio.sleep(random.randint(300, 600))  # Online for 5-10 minutes
 
-                # Disconnect
+                await send_webhook_log(f"[😴 SLEEP] {username}#{discriminator} is sleeping.")
                 await ws.close()
 
-                # Rest for 2 to 5 minutes
-                offline_time = random.randint(120, 300)
-                await asyncio.sleep(offline_time)
+                sleep_time = random.randint(60, 180)  # Sleep for 1–3 minutes
+                await asyncio.sleep(sleep_time)
+
+                await send_webhook_log(f"[☀️ WAKE UP] {username}#{discriminator} is back online after {sleep_time} seconds.")
 
         except Exception as e:
-            print(f"{Fore.RED}[!] Error for {userinfo['username']}: {e}")
-            await asyncio.sleep(60)
+            await send_webhook_log(f"[!] Error for {username}: {e}. Retrying in 30s...")
+            await asyncio.sleep(30)
 
-async def run_all():
-    tasks = []
-    for token in tokens:
-        userinfo = validate_token(token)
-        if not userinfo:
-            print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
-            continue
-        await asyncio.sleep(random.randint(1, 10))  # stagger starts
-        tasks.append(asyncio.create_task(simulate_presence(token, userinfo)))
+async def main():
+    print(f"{Fore.WHITE}[{Fore.LIGHTGREEN_EX}+{Fore.WHITE}] Starting presence simulator for {len(TOKENS)} account(s)...")
+    tasks = [simulate_presence(token) for token in TOKENS]
     await asyncio.gather(*tasks)
 
-keep_alive()
-asyncio.run(run_all())
+if __name__ == "__main__":
+    asyncio.run(main())
