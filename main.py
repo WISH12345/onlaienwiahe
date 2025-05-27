@@ -7,7 +7,7 @@ import random
 import requests
 import websockets
 from colorama import init, Fore
-from keep_alive import keep_alive  # Make sure you also have keep_alive.py
+import traceback
 
 init(autoreset=True)
 
@@ -105,8 +105,14 @@ async def onliner(token, userinfo):
 
                 print(f"{Fore.BLUE}[+] Reconnecting now...")
 
+        except websockets.ConnectionClosed as e:
+            print(f"{Fore.YELLOW}[!] Connection closed for {username}#{discriminator}: {e}. Reconnecting in 30 seconds...")
+            await asyncio.sleep(30)
+
         except Exception as e:
-            print(f"{Fore.RED}[!] Error for {username}#{discriminator}: {e}. Retrying in 30 seconds...")
+            print(f"{Fore.RED}[!] Unexpected error for {username}#{discriminator}: {e}")
+            traceback.print_exc()
+            print(f"{Fore.RED}Retrying in 30 seconds...")
             await asyncio.sleep(30)
 
 async def run_all():
@@ -122,9 +128,11 @@ async def run_all():
             print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
             continue
         tasks.append(asyncio.create_task(onliner(token, userinfo)))
-
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
-    keep_alive()
-    asyncio.run(run_all())
+    try:
+        asyncio.run(run_all())
+    except KeyboardInterrupt:
+        print(f"{Fore.RED}\n[!] Exiting... Goodbye!")
+        sys.exit()
