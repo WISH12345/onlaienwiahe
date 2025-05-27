@@ -18,7 +18,7 @@ tokens = []
 for i in range(1, 5):
     token = os.getenv(f"TOKEN{i}")
     if token:
-        tokens.append(token)
+        tokens.append(token.strip())
 
 if not tokens:
     print(f"{Fore.RED}[!] No tokens found in environment variables TOKEN1, TOKEN2, ...")
