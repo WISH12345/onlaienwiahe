@@ -47,8 +47,11 @@ async def heartbeat(ws, interval, username):
         while True:
             await asyncio.sleep(interval / 1000)
             await ws.send(json.dumps({"op": 1, "d": None}))
-    except Exception:
-        await send_webhook_log(f"[⚠️ DISCONNECTED] {username} lost connection. Reconnecting...")
+    except asyncio.CancelledError:
+        # Task cancelled - normal on disconnect
+        pass
+    except Exception as e:
+        await send_webhook_log(f"[⚠️ HEARTBEAT ERROR] {username}: {e}")
 
 async def simulate_presence(token):
     headers = {"Authorization": token, "Content-Type": "application/json"}
@@ -72,7 +75,7 @@ async def simulate_presence(token):
                 start = json.loads(await ws.recv())
                 heartbeat_interval = start["d"]["heartbeat_interval"]
 
-                asyncio.create_task(heartbeat(ws, heartbeat_interval, username))
+                heartbeat_task = asyncio.create_task(heartbeat(ws, heartbeat_interval, username))
 
                 auth_payload = {
                     "op": 2,
@@ -114,11 +117,22 @@ async def simulate_presence(token):
                 await send_webhook_log(f"[😴 SLEEP] {username}#{discriminator} is sleeping for a bit.")
                 await ws.close()
 
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+
                 # Sleep offline for 1-3 minutes
                 sleep_duration = random.randint(60, 180)
                 await asyncio.sleep(sleep_duration)
 
                 await send_webhook_log(f"[☀️ WAKE UP] {username}#{discriminator} is back online after sleeping {sleep_duration} seconds.")
+
+        except websockets.ConnectionClosed as e:
+            print(f"{Fore.YELLOW}[!] Connection closed for {username}: {e}. Reconnecting in 30s...")
+            await send_webhook_log(f"[🔄 RECONNECT] {username} connection closed ({e.code}). Reconnecting in 30 seconds.")
+            await asyncio.sleep(30)
 
         except Exception as e:
             print(f"{Fore.RED}[!] Error for {username}: {e} Retrying in 30s...")
@@ -130,4 +144,7 @@ async def main():
     await asyncio.gather(*(simulate_presence(token) for token in tokens))
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print(f"{Fore.RED}\n[!] Exiting... Goodbye!")
