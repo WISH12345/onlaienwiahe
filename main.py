@@ -112,7 +112,7 @@ async def run_all():
     else:
         os.system("clear")
 
-    async with requests.Session() as session:
+    with requests.Session() as session:
         tasks = []
         for token in tokens:
             userinfo = validate_token(token)
