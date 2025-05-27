@@ -8,11 +8,17 @@ import requests
 import websockets
 from colorama import init, Fore
 from keep_alive import keep_alive  # Make sure you also have keep_alive.py
+import aiohttp
 
 init(autoreset=True)
 
-status = "dnd"  # online, idle, dnd
-custom_status = ".gg/rollbet"
+status = "dnd"  # Options: "online", "idle", or "dnd"
+custom_status = ".gg/rollbet"  # Text to show in custom status
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+if not WEBHOOK_URL:
+    print(f"{Fore.RED}[!] No WEBHOOK_URL found in environment variables.")
+    sys.exit()
 
 def get_tokens_from_env():
     tokens = []
@@ -21,7 +27,7 @@ def get_tokens_from_env():
         token = os.getenv(f"TOKEN{i}")
         if not token:
             break
-        tokens.append(token.strip())
+        tokens.append(token.strip())  # Strips any \n or spaces
         i += 1
     return tokens
 
@@ -38,88 +44,80 @@ def validate_token(token):
         return None
     return r.json()
 
-async def onliner(token, userinfo):
-    while True:
-        try:
-            async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
-                seq = None  # sequence number
+async def send_webhook_message(session, content):
+    try:
+        async with session.post(WEBHOOK_URL, json={"content": content}) as resp:
+            if resp.status != 204:
+                print(f"{Fore.RED}[!] Failed to send webhook message, status code: {resp.status}")
+    except Exception as e:
+        print(f"{Fore.RED}[!] Exception sending webhook message: {e}")
 
-                # Receive Hello event
-                hello_msg = json.loads(await ws.recv())
-                heartbeat_interval = hello_msg["d"]["heartbeat_interval"] / 1000
+async def onliner(token, userinfo, session):
+    try:
+        async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
+            start = json.loads(await ws.recv())
+            heartbeat_interval = start["d"]["heartbeat_interval"] / 1000
 
-                async def heartbeat():
-                    while True:
-                        payload = {"op": 1, "d": seq}
-                        await ws.send(json.dumps(payload))
-                        print(f"{Fore.CYAN}[{userinfo['username']}] Heartbeat sent with seq {seq}")
-                        await asyncio.sleep(heartbeat_interval)
+            async def heartbeat():
+                while True:
+                    await ws.send(json.dumps({"op": 1, "d": None}))
+                    await asyncio.sleep(heartbeat_interval)
 
-                hb_task = asyncio.create_task(heartbeat())
+            asyncio.create_task(heartbeat())
 
-                # Send Identify payload
-                identify = {
-                    "op": 2,
-                    "d": {
-                        "token": token,
-                        "properties": {
-                            "$os": platform.system(),
-                            "$browser": "Chrome",
-                            "$device": "Desktop"
-                        },
-                        "presence": {
-                            "status": status,
-                            "afk": False,
-                            "activities": [{
+            auth = {
+                "op": 2,
+                "d": {
+                    "token": token,
+                    "properties": {
+                        "$os": platform.system(),
+                        "$browser": "Chrome",
+                        "$device": "Desktop"
+                    },
+                    "presence": {
+                        "status": status,
+                        "afk": False,
+                        "activities": [
+                            {
                                 "type": 4,
                                 "state": custom_status,
                                 "name": "Custom Status"
-                            }]
-                        }
+                            }
+                        ]
                     }
                 }
-                await ws.send(json.dumps(identify))
-                print(f"{Fore.GREEN}[+]{Fore.WHITE} Online: {userinfo['username']}#{userinfo['discriminator']} ({userinfo['id']})")
+            }
 
-                # Stay connected and process incoming messages
-                online_time = random.randint(3600, 7200)
-                print(f"{Fore.YELLOW}[{userinfo['username']}] Staying online for {online_time} seconds.")
+            await ws.send(json.dumps(auth))
 
-                end_time = asyncio.get_event_loop().time() + online_time
-                while True:
-                    if asyncio.get_event_loop().time() > end_time:
-                        print(f"{Fore.MAGENTA}[{userinfo['username']}] Going offline now (closing websocket).")
-                        hb_task.cancel()
-                        await ws.close()
-                        break
+            username = userinfo['username']
+            discriminator = userinfo['discriminator']
+            user_id = userinfo['id']
+            print(f"{Fore.GREEN}[+]{Fore.WHITE} Online: {username}#{discriminator} ({user_id})")
+            await send_webhook_message(session, f"✅ Online: `{username}#{discriminator}` ({user_id})")
 
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=heartbeat_interval*2)
-                    except asyncio.TimeoutError:
-                        print(f"{Fore.RED}[{userinfo['username']}] No message from server, reconnecting...")
-                        hb_task.cancel()
-                        await ws.close()
-                        break
+            online_time = random.randint(3600, 7200)  # 1-2 hours online
+            await asyncio.sleep(online_time)
 
-                    msg_json = json.loads(msg)
-                    op = msg_json.get("op")
-                    t = msg_json.get("t")
-                    seq = msg_json.get("s") or seq
+            print(f"{Fore.YELLOW}[-]{Fore.WHITE} Going offline: {username}#{discriminator} ({user_id})")
+            await send_webhook_message(session, f"💤 Offline: `{username}#{discriminator}` ({user_id})")
 
-                    # Handle Heartbeat ACK
-                    if op == 11:
-                        print(f"{Fore.CYAN}[{userinfo['username']}] Heartbeat ACK received.")
+            await ws.close()
 
-                    # You can handle other events if needed (e.g. READY, RESUMED)
+            offline_time = random.randint(60, 180)  # 1-3 minutes offline
+            await asyncio.sleep(offline_time)
 
-                # Offline time 1 to 3 minutes
-                offline_time = random.randint(60, 180)
-                print(f"{Fore.BLUE}[{userinfo['username']}] Offline for {offline_time} seconds.")
-                await asyncio.sleep(offline_time)
+            print(f"{Fore.CYAN}[+]{Fore.WHITE} Woke up: {username}#{discriminator} ({user_id})")
+            await send_webhook_message(session, f"☀️ Woke up: `{username}#{discriminator}` ({user_id})")
 
-        except Exception as e:
-            print(f"{Fore.RED}[!] Error for {userinfo['username']}#{userinfo['discriminator']}: {e}")
-            await asyncio.sleep(5)
+            # Restart cycle
+            await onliner(token, userinfo, session)
+
+    except Exception as e:
+        print(f"{Fore.RED}[!] Error for {userinfo['username']}#{userinfo['discriminator']}: {e}")
+        await send_webhook_message(session, f"❌ Error for `{userinfo['username']}#{userinfo['discriminator']}`: {e}")
+        await asyncio.sleep(5)
+        await onliner(token, userinfo, session)
 
 async def run_all():
     if platform.system() == "Windows":
@@ -127,14 +125,18 @@ async def run_all():
     else:
         os.system("clear")
 
-    tasks = []
-    for token in tokens:
-        userinfo = validate_token(token)
-        if not userinfo:
-            print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
-            continue
-        tasks.append(asyncio.create_task(onliner(token, userinfo)))
-    await asyncio.gather(*tasks)
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for token in tokens:
+            userinfo = validate_token(token)
+            if not userinfo:
+                print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
+                continue
+            tasks.append(asyncio.create_task(onliner(token, userinfo, session)))
+        await asyncio.gather(*tasks)
 
+# Start Flask keep-alive server (for Railway/Replit)
 keep_alive()
+
+# Run the main async task
 asyncio.run(run_all())
