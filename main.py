@@ -1,18 +1,20 @@
 import os
 import sys
 import json
+import time
 import asyncio
-import platform
 import random
+import platform
+import requests
 import websockets
 import aiohttp
-from datetime import datetime
 from colorama import init, Fore
+from datetime import datetime, timezone
 
 init(autoreset=True)
 
-# Environment token and webhook loader
-def get_tokens_from_env():
+# Load tokens from environment (for Railway)
+def get_tokens():
     tokens = []
     i = 1
     while True:
@@ -23,117 +25,119 @@ def get_tokens_from_env():
         i += 1
     return tokens
 
-tokens = get_tokens_from_env()
+tokens = get_tokens()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 status = "dnd"
 custom_status = ".gg/rollbet"
 
-# Send messages to Discord webhook
-async def send_webhook_log(session, content):
+def get_user_info(token):
+    headers = {"Authorization": token}
+    r = requests.get("https://discord.com/api/v9/users/@me", headers=headers)
+    if r.status_code == 200:
+        return r.json()
+    return None
+
+async def send_webhook(session, message):
     if not WEBHOOK_URL:
         return
     try:
-        payload = {"content": content}
+        payload = {"content": message}
         async with session.post(WEBHOOK_URL, json=payload) as resp:
-            if resp.status not in [200, 204]:
-                print(f"{Fore.RED}[!] Webhook failed: {resp.status}")
+            if resp.status != 204:
+                print(f"{Fore.RED}[!] Webhook failed: HTTP {resp.status}")
     except Exception as e:
         print(f"{Fore.RED}[!] Webhook error: {e}")
 
-# Keep a token online with sleep/wake cycle
-async def simulate_presence(token):
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
-                    hello_payload = json.loads(await ws.recv())
-                    heartbeat_interval = hello_payload["d"]["heartbeat_interval"] / 1000
+async def presence_cycle(token, session):
+    user = get_user_info(token)
+    if not user:
+        print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
+        return
 
-                    # Send heartbeat every interval
-                    async def heartbeat():
-                        try:
-                            while True:
-                                await ws.send(json.dumps({"op": 1, "d": None}))
-                                print(f"{Fore.LIGHTMAGENTA_EX}[HB] Sent heartbeat for {token[:6]}")
-                                await asyncio.sleep(heartbeat_interval)
-                        except asyncio.CancelledError:
-                            return
+    username = f"{user['username']}#{user['discriminator']}"
 
-                    heartbeat_task = asyncio.create_task(heartbeat())
+    while True:
+        try:
+            async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
+                hello = json.loads(await ws.recv())
+                heartbeat_interval = hello['d']['heartbeat_interval'] / 1000
 
-                    # Authenticate and go online
-                    auth_payload = {
-                        "op": 2,
-                        "d": {
-                            "token": token,
-                            "properties": {
-                                "$os": platform.system(),
-                                "$browser": "Chrome",
-                                "$device": "Desktop"
-                            },
-                            "presence": {
-                                "status": status,
-                                "afk": False,
-                                "activities": [
-                                    {
-                                        "type": 4,
-                                        "state": custom_status,
-                                        "name": "Custom Status"
-                                    }
-                                ]
-                            }
+                async def heartbeat():
+                    while True:
+                        await ws.send(json.dumps({"op": 1, "d": None}))
+                        print(f"{Fore.LIGHTMAGENTA_EX}[HB] Heartbeat sent for {username}")
+                        await asyncio.sleep(heartbeat_interval * 0.9)
+
+                hb = asyncio.create_task(heartbeat())
+
+                auth = {
+                    "op": 2,
+                    "d": {
+                        "token": token,
+                        "properties": {
+                            "$os": platform.system(),
+                            "$browser": "Chrome",
+                            "$device": "Desktop"
+                        },
+                        "presence": {
+                            "status": status,
+                            "afk": False,
+                            "activities": [
+                                {
+                                    "type": 4,
+                                    "state": custom_status,
+                                    "name": "Custom Status"
+                                }
+                            ]
                         }
                     }
+                }
 
-                    await ws.send(json.dumps(auth_payload))
-                    print(f"{Fore.GREEN}[+] Token {token[:6]} is now online.")
-                    await send_webhook_log(session, f"[✅ ONLINE] Token `{token[:6]}...` is now online at {datetime.utcnow().strftime('%H:%M:%S UTC')}.")
+                await ws.send(json.dumps(auth))
+                await send_webhook(session, f"[✅ ONLINE] {username} is now online.")
+                print(f"{Fore.GREEN}[+] Online: {username}")
 
-                    # Online uptime: 2–4 hours
-                    uptime = random.randint(7200, 14400)
-                    await asyncio.sleep(uptime)
+                uptime = random.randint(7200, 14400)  # 2 to 4 hours
+                start_time = datetime.now(timezone.utc)
+                await asyncio.sleep(uptime)
 
-                    print(f"{Fore.YELLOW}[-] Token {token[:6]} going offline for a break.")
-                    await send_webhook_log(session, f"[😴 SLEEP] Token `{token[:6]}...` sleeping for a bit after {uptime // 60} minutes.")
+                # Offline period
+                await send_webhook(session, f"[😴 SLEEP] {username} sleeping after {uptime // 60} minutes online.")
+                print(f"{Fore.YELLOW}[-] {username} going offline for a break...")
 
-                    heartbeat_task.cancel()
-                    try:
-                        await heartbeat_task
-                    except asyncio.CancelledError:
-                        pass
+                hb.cancel()
+                try:
+                    await hb
+                except asyncio.CancelledError:
+                    pass
 
-                    await ws.close()
+                await ws.close()
 
-                    # Sleep offline: 1–3 minutes
-                    downtime = random.randint(60, 180)
-                    await asyncio.sleep(downtime)
+                sleep_time = random.randint(60, 180)  # 1 to 3 min
+                await asyncio.sleep(sleep_time)
 
-                    print(f"{Fore.CYAN}[+] Token {token[:6]} waking up after {downtime} seconds.")
-                    await send_webhook_log(session, f"[☀️ WAKE UP] Token `{token[:6]}...` woke up after {downtime} seconds.")
+                await send_webhook(session, f"[☀️ WAKE UP] {username} is back online after sleeping {sleep_time} seconds.")
 
-            except websockets.ConnectionClosed as e:
-                print(f"{Fore.YELLOW}[!] Connection closed for {token[:6]}: {e}. Retrying...")
-                await send_webhook_log(session, f"[🔄 RECONNECT] Token `{token[:6]}...` connection closed ({e.code}). Reconnecting in 30s.")
-                await asyncio.sleep(30)
+        except websockets.ConnectionClosed as e:
+            print(f"{Fore.YELLOW}[!] Connection closed for {username}. Reconnecting in 30s...")
+            await send_webhook(session, f"[🔄 RECONNECT] {username} connection closed ({e.code}). Retrying...")
+            await asyncio.sleep(30)
 
-            except Exception as e:
-                print(f"{Fore.RED}[!] Error for {token[:6]}: {e}. Retrying...")
-                await send_webhook_log(session, f"[❌ ERROR] Token `{token[:6]}...`: {e} — retrying in 30 seconds.")
-                await asyncio.sleep(30)
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error for {username}: {e}")
+            await send_webhook(session, f"[❌ ERROR] {username}: {e}")
+            await asyncio.sleep(30)
 
-# Run all tokens with staggered start
 async def main():
-    print(f"{Fore.WHITE}[{Fore.LIGHTGREEN_EX}+{Fore.WHITE}] Starting simulator for {len(tokens)} account(s)...")
-
-    tasks = []
-    for token in tokens:
-        delay = random.randint(10, 60)
-        print(f"{Fore.BLUE}[~] Stagger delay of {delay}s before launching token {token[:6]}...")
-        await asyncio.sleep(delay)
-        tasks.append(asyncio.create_task(simulate_presence(token)))
-
-    await asyncio.gather(*tasks)
+    print(f"{Fore.LIGHTBLUE_EX}[+] Starting presence simulator for {len(tokens)} accounts.")
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for token in tokens:
+            delay = random.randint(0, 30)
+            await asyncio.sleep(delay)
+            tasks.append(asyncio.create_task(presence_cycle(token, session)))
+        await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     try:
