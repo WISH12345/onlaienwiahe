@@ -7,7 +7,7 @@ import random
 import requests
 import websockets
 from colorama import init, Fore
-import traceback
+from keep_alive import keep_alive  # Make sure you also have keep_alive.py
 
 init(autoreset=True)
 
@@ -39,13 +39,8 @@ def validate_token(token):
     return r.json()
 
 async def onliner(token, userinfo):
-    token_short = token[:6]
-    username = userinfo['username']
-    discriminator = userinfo['discriminator']
-
     while True:
         try:
-            print(f"{Fore.CYAN}[{username}#{discriminator}] Connecting websocket...")
             async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
                 start = json.loads(await ws.recv())
                 heartbeat_interval = start["d"]["heartbeat_interval"] / 1000
@@ -53,10 +48,10 @@ async def onliner(token, userinfo):
                 async def heartbeat():
                     while True:
                         await ws.send(json.dumps({"op": 1, "d": None}))
-                        print(f"{Fore.YELLOW}[{username}#{discriminator}] Heartbeat sent.")
+                        print(f"{Fore.CYAN}[{userinfo['username']}] Heartbeat sent.")
                         await asyncio.sleep(heartbeat_interval)
 
-                hb_task = asyncio.create_task(heartbeat())
+                asyncio.create_task(heartbeat())
 
                 auth = {
                     "op": 2,
@@ -82,38 +77,25 @@ async def onliner(token, userinfo):
                 }
 
                 await ws.send(json.dumps(auth))
-                print(f"{Fore.GREEN}[+] Online: {username}#{discriminator} ({userinfo['id']})")
 
-                # Stay online for 1 to 2 hours (random)
+                print(f"{Fore.GREEN}[+]{Fore.WHITE} Online: {userinfo['username']}#{userinfo['discriminator']} ({userinfo['id']})")
+
+                # Stay online for 1 to 2 hours (3600 to 7200 seconds)
                 online_time = random.randint(3600, 7200)
-                print(f"{Fore.CYAN}[*] Staying online for {online_time} seconds.")
+                print(f"{Fore.YELLOW}[{userinfo['username']}] Staying online for {online_time} seconds.")
                 await asyncio.sleep(online_time)
 
-                print(f"{Fore.YELLOW}[-] Going offline (disconnecting)...")
-                hb_task.cancel()
-                try:
-                    await hb_task
-                except asyncio.CancelledError:
-                    pass
-
+                print(f"{Fore.MAGENTA}[{userinfo['username']}] Going offline now (closing websocket).")
                 await ws.close()
 
-                # Offline for 1 to 3 minutes (random)
-                offline_time = random.randint(60, 180)
-                print(f"{Fore.CYAN}[*] Offline for {offline_time} seconds.")
-                await asyncio.sleep(offline_time)
-
-                print(f"{Fore.BLUE}[+] Reconnecting now...")
-
-        except websockets.ConnectionClosed as e:
-            print(f"{Fore.YELLOW}[!] Connection closed for {username}#{discriminator}: {e}. Reconnecting in 30 seconds...")
-            await asyncio.sleep(30)
+            # Offline downtime 1 to 3 minutes (60 to 180 seconds)
+            offline_time = random.randint(60, 180)
+            print(f"{Fore.BLUE}[{userinfo['username']}] Offline for {offline_time} seconds.")
+            await asyncio.sleep(offline_time)
 
         except Exception as e:
-            print(f"{Fore.RED}[!] Unexpected error for {username}#{discriminator}: {e}")
-            traceback.print_exc()
-            print(f"{Fore.RED}Retrying in 30 seconds...")
-            await asyncio.sleep(30)
+            print(f"{Fore.RED}[!] Error for {userinfo['username']}#{userinfo['discriminator']}: {e}")
+            await asyncio.sleep(5)
 
 async def run_all():
     if platform.system() == "Windows":
@@ -130,9 +112,8 @@ async def run_all():
         tasks.append(asyncio.create_task(onliner(token, userinfo)))
     await asyncio.gather(*tasks)
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(run_all())
-    except KeyboardInterrupt:
-        print(f"{Fore.RED}\n[!] Exiting... Goodbye!")
-        sys.exit()
+# Start Flask keep-alive server (for Railway/Replit)
+keep_alive()
+
+# Run the main async task
+asyncio.run(run_all())
