@@ -3,6 +3,7 @@ import sys
 import json
 import asyncio
 import platform
+import random
 import requests
 import websockets
 from colorama import init, Fore
@@ -38,51 +39,75 @@ def validate_token(token):
     return r.json()
 
 async def onliner(token, userinfo):
-    try:
-        async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
-            start = json.loads(await ws.recv())
-            heartbeat_interval = start["d"]["heartbeat_interval"] / 1000
+    token_short = token[:6]
+    username = userinfo['username']
+    discriminator = userinfo['discriminator']
 
-            async def heartbeat():
-                while True:
-                    await ws.send(json.dumps({"op": 1, "d": None}))
-                    await asyncio.sleep(heartbeat_interval)
+    while True:
+        try:
+            print(f"{Fore.CYAN}[{username}#{discriminator}] Connecting websocket...")
+            async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
+                start = json.loads(await ws.recv())
+                heartbeat_interval = start["d"]["heartbeat_interval"] / 1000
 
-            asyncio.create_task(heartbeat())
+                async def heartbeat():
+                    while True:
+                        await ws.send(json.dumps({"op": 1, "d": None}))
+                        print(f"{Fore.YELLOW}[{username}#{discriminator}] Heartbeat sent.")
+                        await asyncio.sleep(heartbeat_interval)
 
-            auth = {
-                "op": 2,
-                "d": {
-                    "token": token,
-                    "properties": {
-                        "$os": platform.system(),
-                        "$browser": "Chrome",
-                        "$device": "Desktop"
-                    },
-                    "presence": {
-                        "status": status,
-                        "afk": False,
-                        "activities": [
-                            {
-                                "type": 4,
-                                "state": custom_status,
-                                "name": "Custom Status"
-                            }
-                        ]
+                hb_task = asyncio.create_task(heartbeat())
+
+                auth = {
+                    "op": 2,
+                    "d": {
+                        "token": token,
+                        "properties": {
+                            "$os": platform.system(),
+                            "$browser": "Chrome",
+                            "$device": "Desktop"
+                        },
+                        "presence": {
+                            "status": status,
+                            "afk": False,
+                            "activities": [
+                                {
+                                    "type": 4,
+                                    "state": custom_status,
+                                    "name": "Custom Status"
+                                }
+                            ]
+                        }
                     }
                 }
-            }
 
-            await ws.send(json.dumps(auth))
+                await ws.send(json.dumps(auth))
+                print(f"{Fore.GREEN}[+] Online: {username}#{discriminator} ({userinfo['id']})")
 
-            print(f"{Fore.GREEN}[+]{Fore.WHITE} Online: {userinfo['username']}#{userinfo['discriminator']} ({userinfo['id']})")
+                # Stay online for 1 to 2 hours (random)
+                online_time = random.randint(3600, 7200)
+                print(f"{Fore.CYAN}[*] Staying online for {online_time} seconds.")
+                await asyncio.sleep(online_time)
 
-            while True:
-                await ws.recv()
-    except Exception as e:
-        print(f"{Fore.RED}[!] Error for {userinfo['username']}#{userinfo['discriminator']}: {e}")
-        await asyncio.sleep(5)
-        await onliner(token, userinfo)
+                print(f"{Fore.YELLOW}[-] Going offline (disconnecting)...")
+                hb_task.cancel()
+                try:
+                    await hb_task
+                except asyncio.CancelledError:
+                    pass
+
+                await ws.close()
+
+                # Offline for 1 to 3 minutes (random)
+                offline_time = random.randint(60, 180)
+                print(f"{Fore.CYAN}[*] Offline for {offline_time} seconds.")
+                await asyncio.sleep(offline_time)
+
+                print(f"{Fore.BLUE}[+] Reconnecting now...")
+
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error for {username}#{discriminator}: {e}. Retrying in 30 seconds...")
+            await asyncio.sleep(30)
 
 async def run_all():
     if platform.system() == "Windows":
@@ -97,10 +122,9 @@ async def run_all():
             print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
             continue
         tasks.append(asyncio.create_task(onliner(token, userinfo)))
+
     await asyncio.gather(*tasks)
 
-# Start Flask keep-alive server (for Railway/Replit)
-keep_alive()
-
-# Run the main async task
-asyncio.run(run_all())
+if __name__ == "__main__":
+    keep_alive()
+    asyncio.run(run_all())
