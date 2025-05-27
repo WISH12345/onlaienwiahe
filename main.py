@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import time
 import asyncio
 import random
 import platform
@@ -9,12 +8,15 @@ import requests
 import websockets
 import aiohttp
 from colorama import init, Fore
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 
 init(autoreset=True)
 
-# Load tokens from environment (for Railway)
-def get_tokens():
+status = "dnd"
+custom_status = ".gg/rollbet"
+
+# Load tokens from environment
+def get_tokens_from_env():
     tokens = []
     i = 1
     while True:
@@ -25,53 +27,46 @@ def get_tokens():
         i += 1
     return tokens
 
-tokens = get_tokens()
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+tokens = get_tokens_from_env()
+webhook_url = os.getenv("WEBHOOK_URL")
 
-status = "dnd"
-custom_status = ".gg/rollbet"
+if not tokens:
+    print(f"{Fore.RED}No tokens found in environment variables! Use TOKEN1, TOKEN2, etc.")
+    sys.exit()
 
-def get_user_info(token):
-    headers = {"Authorization": token}
-    r = requests.get("https://discord.com/api/v9/users/@me", headers=headers)
-    if r.status_code == 200:
-        return r.json()
-    return None
+def validate_token(token):
+    headers = {"Authorization": token, "Content-Type": "application/json"}
+    r = requests.get("https://canary.discord.com/api/v9/users/@me", headers=headers)
+    if r.status_code != 200:
+        return None
+    return r.json()
 
-async def send_webhook(session, message):
-    if not WEBHOOK_URL:
+async def send_webhook(session, content):
+    if not webhook_url:
         return
     try:
-        payload = {"content": message}
-        async with session.post(WEBHOOK_URL, json=payload) as resp:
-            if resp.status != 204:
-                print(f"{Fore.RED}[!] Webhook failed: HTTP {resp.status}")
+        await session.post(webhook_url, json={"content": content})
     except Exception as e:
         print(f"{Fore.RED}[!] Webhook error: {e}")
 
-async def presence_cycle(token, session):
-    user = get_user_info(token)
-    if not user:
-        print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
-        return
-
-    username = f"{user['username']}#{user['discriminator']}"
+async def onliner(token, userinfo, session):
+    username = f"{userinfo['username']}#{userinfo['discriminator']}"
+    token_id = token[:6]
 
     while True:
         try:
             async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
-                hello = json.loads(await ws.recv())
-                heartbeat_interval = hello['d']['heartbeat_interval'] / 1000
+                start = json.loads(await ws.recv())
+                heartbeat_interval = start["d"]["heartbeat_interval"] / 1000  # Usually ~40s
 
                 async def heartbeat():
                     while True:
                         await ws.send(json.dumps({"op": 1, "d": None}))
-                        print(f"{Fore.LIGHTMAGENTA_EX}[HB] Heartbeat sent for {username}")
-                        await asyncio.sleep(heartbeat_interval * 0.9)
+                        await asyncio.sleep(heartbeat_interval)
 
-                hb = asyncio.create_task(heartbeat())
+                heartbeat_task = asyncio.create_task(heartbeat())
 
-                auth = {
+                auth_payload = {
                     "op": 2,
                     "d": {
                         "token": token,
@@ -94,49 +89,55 @@ async def presence_cycle(token, session):
                     }
                 }
 
-                await ws.send(json.dumps(auth))
-                await send_webhook(session, f"[✅ ONLINE] {username} is now online.")
-                print(f"{Fore.GREEN}[+] Online: {username}")
+                await ws.send(json.dumps(auth_payload))
 
-                uptime = random.randint(28800, 39600)  # 2 to 4 hours
-                start_time = datetime.now(timezone.utc)
+                now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+                print(f"{Fore.GREEN}[+] Online: {username} ({token_id}) — {now}")
+                await send_webhook(session, f"✅ `{username}` is now **online** at {now}.")
+
+                # Stay online 2–4 hours
+                uptime = random.randint(7200, 14400)
                 await asyncio.sleep(uptime)
 
-                # Offline period
-                await send_webhook(session, f"[😴 SLEEP] {username} sleeping after {uptime // 60} minutes online.")
-                print(f"{Fore.YELLOW}[-] {username} going offline for a break...")
+                print(f"{Fore.YELLOW}[-] {username} going offline for a bit...")
+                await send_webhook(session, f"😴 `{username}` is going offline for a rest (was online for {uptime // 60} mins).")
 
-                hb.cancel()
+                heartbeat_task.cancel()
                 try:
-                    await hb
+                    await heartbeat_task
                 except asyncio.CancelledError:
                     pass
-
                 await ws.close()
 
-                sleep_time = random.randint(60, 180)  # 1 to 3 min
+                # Sleep 1–5 mins
+                sleep_time = random.randint(60, 300)
                 await asyncio.sleep(sleep_time)
 
-                await send_webhook(session, f"[☀️ WAKE UP] {username} is back online after sleeping {sleep_time} seconds.")
+                print(f"{Fore.CYAN}[☀️] {username} waking up after {sleep_time} seconds.")
+                await send_webhook(session, f"☀️ `{username}` is back online after sleeping for {sleep_time} seconds.")
 
         except websockets.ConnectionClosed as e:
-            print(f"{Fore.YELLOW}[!] Connection closed for {username}. Reconnecting in 30s...")
-            await send_webhook(session, f"[🔄 RECONNECT] {username} connection closed ({e.code}). Retrying...")
+            print(f"{Fore.YELLOW}[!] Disconnected: {username} — {e}. Retrying in 30s.")
+            await send_webhook(session, f"🔄 `{username}` was disconnected ({e.code}). Reconnecting in 30 seconds.")
             await asyncio.sleep(30)
 
         except Exception as e:
-            print(f"{Fore.RED}[!] Error for {username}: {e}")
-            await send_webhook(session, f"[❌ ERROR] {username}: {e}")
+            print(f"{Fore.RED}[!] Error with {username}: {e}")
+            await send_webhook(session, f"❌ Error for `{username}`: {e}. Retrying in 30 seconds.")
             await asyncio.sleep(30)
 
 async def main():
-    print(f"{Fore.LIGHTBLUE_EX}[+] Starting presence simulator for {len(tokens)} accounts.")
     async with aiohttp.ClientSession() as session:
         tasks = []
         for token in tokens:
-            delay = random.randint(0, 30)
+            userinfo = validate_token(token)
+            if not userinfo:
+                print(f"{Fore.RED}[x] Invalid token: {token[:10]}...")
+                continue
+            delay = random.randint(5, 30)
+            print(f"{Fore.BLUE}[i] Staggering start for {userinfo['username']}#{userinfo['discriminator']} by {delay}s")
             await asyncio.sleep(delay)
-            tasks.append(asyncio.create_task(presence_cycle(token, session)))
+            tasks.append(asyncio.create_task(onliner(token, userinfo, session)))
         await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
