@@ -8,10 +8,8 @@ import aiohttp
 import requests
 import websockets
 from colorama import init, Fore
-from dotenv import load_dotenv
 
 init(autoreset=True)
-load_dotenv()
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 TOKENS = [t.strip() for t in os.getenv("TOKENS", "").split("\n") if t.strip()]
