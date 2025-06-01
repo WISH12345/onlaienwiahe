@@ -39,13 +39,22 @@ def validate_token(token):
 
 async def onliner(token, userinfo):
     try:
-        async with websockets.connect("wss://gateway.discord.gg/?v=9&encoding=json") as ws:
+        async with websockets.connect(
+            "wss://gateway.discord.gg/?v=9&encoding=json",
+            max_size=1 * 1024 * 1024  # Increase max receive size to 2MB
+        ) as ws:
             start = json.loads(await ws.recv())
             heartbeat_interval = start["d"]["heartbeat_interval"] / 1000
 
             async def heartbeat():
                 while True:
-                    await ws.send(json.dumps({"op": 1, "d": None}))
+                    heartbeat_payload = json.dumps({"op": 1, "d": None})
+                    print(f"[HEARTBEAT] Sending {len(heartbeat_payload)} bytes")
+                    try:
+                        await ws.send(heartbeat_payload)
+                    except Exception as e:
+                        print(f"{Fore.RED}[!] Heartbeat error: {e}")
+                        break
                     await asyncio.sleep(heartbeat_interval)
 
             asyncio.create_task(heartbeat())
@@ -73,12 +82,26 @@ async def onliner(token, userinfo):
                 }
             }
 
-            await ws.send(json.dumps(auth))
+            auth_payload = json.dumps(auth)
+            print(f"[AUTH] Sending identify payload ({len(auth_payload)} bytes)")
+            await ws.send(auth_payload)
 
             print(f"{Fore.GREEN}[+]{Fore.WHITE} Online: {userinfo['username']}#{userinfo['discriminator']} ({userinfo['id']})")
 
             while True:
-                await ws.recv()
+                try:
+                    msg = await ws.recv()
+                    if isinstance(msg, str) and len(msg) > 1_000_000:
+                        print(f"{Fore.YELLOW}[!] Skipped large message ({len(msg)} bytes)")
+                        continue
+                    # Optionally parse and inspect msg here
+                except websockets.exceptions.ConnectionClosedError as e:
+                    print(f"{Fore.RED}[!] Connection closed: {e}")
+                    break
+                except Exception as e:
+                    print(f"{Fore.RED}[!] Error receiving message: {e}")
+                    break
+
     except Exception as e:
         print(f"{Fore.RED}[!] Error for {userinfo['username']}#{userinfo['discriminator']}: {e}")
         await asyncio.sleep(5)
