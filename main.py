@@ -41,7 +41,8 @@ async def onliner(token, userinfo):
     try:
         async with websockets.connect(
             "wss://gateway.discord.gg/?v=9&encoding=json",
-            max_size=1 * 1024 * 1024  # Increase max receive size to 2MB
+            max_size=2 * 1024 * 1024,  # Increase max receive size to 2MB
+            compression=None           # Disable compression to prevent 1009 errors
         ) as ws:
             start = json.loads(await ws.recv())
             heartbeat_interval = start["d"]["heartbeat_interval"] / 1000
